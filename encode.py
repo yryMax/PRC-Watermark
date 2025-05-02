@@ -1,17 +1,14 @@
 import os
 import argparse
 import torch
-import pickle
 import json
-from tqdm import tqdm
 import random
 import numpy as np
 from datasets import load_dataset
-from src.prc import KeyGen, Encode, str_to_bin, bin_to_str
-import src.pseudogaussians as prc_gaussians
-from src.baseline.gs_watermark import Gaussian_Shading_chacha
-from src.baseline.treering_watermark import tr_detect, tr_get_noise
-from inversion import stable_diffusion_pipe, generate
+from PIL import Image
+from tqdm import tqdm
+from inversion import stable_diffusion_pipe, generate, exact_inversion
+from watermark_strategy import PRCWatermark
 
 parser = argparse.ArgumentParser('Args')
 parser.add_argument('--test_num', type=int, default=10)
@@ -35,43 +32,14 @@ dataset_id = args.dataset_id
 nowm = args.nowm
 fpr = args.fpr
 prc_t = args.prc_t
-exp_id = f'{method}_num_{test_num}_steps_{args.inf_steps}_fpr_{fpr}_nowm_{nowm}'
-
+exp_id = f'my_mock_impl'
+cur_inv_order = 0
 os.makedirs('keys', exist_ok=True)
 os.makedirs('results', exist_ok=True)
 
-if method == 'prc':
-    if not os.path.exists(f'keys/{exp_id}.pkl'):  # Generate watermark key for the first time and save it to a file
-        (encoding_key_ori, decoding_key_ori) = KeyGen(n, false_positive_rate=fpr, t=prc_t)  # Sample PRC keys
-        with open(f'keys/{exp_id}.pkl', 'wb') as f:  # Save the keys to a file
-            pickle.dump((encoding_key_ori, decoding_key_ori), f)
-        with open(f'keys/{exp_id}.pkl', 'rb') as f:  # Load the keys from a file
-            encoding_key, decoding_key = pickle.load(f)
-        assert encoding_key[0].all() == encoding_key_ori[0].all()
-    else:  # Or we can just load the keys from a file
-        with open(f'keys/{exp_id}.pkl', 'rb') as f:
-            encoding_key, decoding_key = pickle.load(f)
-        print(f'Loaded PRC keys from file keys/{exp_id}.pkl')
-elif method == 'gs':
-    gs_watermark = Gaussian_Shading_chacha(ch_factor=1, hw_factor=8, fpr=fpr, user_number=10000)
-    if not os.path.exists(f'keys/{exp_id}.pkl'):
-        watermark_m_ori, key_ori, nonce_ori, watermark_ori = gs_watermark.create_watermark_and_return_w()
-        with open(f'keys/{exp_id}.pkl', 'wb') as f:
-            pickle.dump((watermark_m_ori, key_ori, nonce_ori, watermark_ori), f)
-        with open(f'keys/{exp_id}.pkl', 'rb') as f:
-            watermark_m, key, nonce, watermark = pickle.load(f)
-        assert watermark_m.all() == watermark_m_ori.all()
-    else:  # Or we can just load the keys from a file
-        with open(f'keys/{exp_id}.pkl', 'rb') as f:
-            watermark_m, key, nonce, watermark = pickle.load(f)
-            print(f'Loaded GS keys from file keys/{exp_id}.pkl')
-elif method == 'tr':
-    # need to generate watermark key for the first time then save it to a file, we just load previous key here
-    tr_key = '7c3fa99795fe2a0311b3d8c0b283c5509ac849e7f5ec7b3768ca60be8c080fd9_0_10_rand'
-    # tr_key = '4145007d1cbd5c3e28876dd866bc278e0023b41eb7af2c6f9b5c4a326cb71f51_0_9_rand'
-    print('Loaded TR keys from file')
-else:
-    raise NotImplementedError
+prc_wm = PRCWatermark()
+
+
 
 if dataset_id == 'coco':
     save_folder = f'./results/{exp_id}_coco/original_images'
@@ -111,13 +79,7 @@ for i in tqdm(range(test_num)):
         init_latents = torch.from_numpy(init_latents_np).to(torch.float64).to(device)
     else:
         if method == 'prc':
-            prc_codeword = Encode(encoding_key)
-            init_latents = prc_gaussians.sample(prc_codeword).reshape(1, 4, 64, 64).to(device)
-        elif method == 'gs':
-            init_latents = gs_watermark.truncSampling(watermark_m)
-        elif method == 'tr':
-            shape = (1, 4, 64, 64)
-            init_latents, _, _ = tr_get_noise(shape, from_file=tr_key, keys_path='keys/')
+            init_latents = prc_wm.get_init_latent()
         else:
             raise NotImplementedError
     orig_image, _, _ = generate(prompt=current_prompt,
@@ -129,3 +91,17 @@ for i in tqdm(range(test_num)):
     orig_image.save(f'{save_folder}/{i}.png')
 
 print(f'Done generating {method} images')
+
+for i in tqdm(range(test_num)):
+    img = Image.open(f'results/{exp_id}/original_images/{i}.png')
+    reversed_latents = exact_inversion(img,
+                                       prompt='',
+                                       test_num_inference_steps=args.inf_steps,
+                                       inv_order=cur_inv_order,
+                                       pipe=pipe
+                                       )
+    fake_bit_acc = prc_wm.detect(reversed_latents.to(torch.float64).flatten().cpu())
+
+    print(f'{i:03d}: {fake_bit_acc:.4f}')
+
+print(f'tpr: {prc_wm.get_tpr():.4f}')

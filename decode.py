@@ -8,10 +8,10 @@ import pickle
 import torch
 from PIL import Image
 from tqdm import tqdm
-from src.prc import Detect, Decode
-import src.pseudogaussians as prc_gaussians
+from watermark_strategy import PRCWatermark
 from inversion import stable_diffusion_pipe, exact_inversion
 
+wm = PRCWatermark()
 parser = argparse.ArgumentParser('Args')
 parser.add_argument('--test_num', type=int, default=10)
 parser.add_argument('--method', type=str, default='prc') # gs, tr, prc
@@ -36,7 +36,7 @@ dataset_id = args.dataset_id
 nowm = args.nowm
 fpr = args.fpr
 prc_t = args.prc_t
-exp_id = f'{method}_num_{test_num}_steps_{args.inf_steps}_fpr_{fpr}_nowm_{nowm}'
+exp_id = f'my_mock_impl'
 
 with open(f'keys/{exp_id}.pkl', 'rb') as f:
     encoding_key, decoding_key = pickle.load(f)
@@ -55,12 +55,11 @@ for i in tqdm(range(test_num)):
                                        inv_order=cur_inv_order,
                                        pipe=pipe
                                        )
-    reversed_prc = prc_gaussians.recover_posteriors(reversed_latents.to(torch.float64).flatten().cpu(), variances=float(var)).flatten().cpu()
-    detection_result = Detect(decoding_key, reversed_prc)
-    decoding_result = (Decode(decoding_key, reversed_prc) is not None)
-    combined_result = detection_result or decoding_result
-    combined_results.append(combined_result)
-    print(f'{i:03d}: Detection: {detection_result}; Decoding: {decoding_result}; Combined: {combined_result}')
+    fake_bit_acc = wm.detect(reversed_latents.to(torch.float64).flatten().cpu())
+
+    print(f'{i:03d}: {fake_bit_acc:.4f}')
+
+print(f'tpr: {wm.get_tpr():.4f}')
 
 with open('decoded.txt', 'w') as f:
     for result in combined_results:
