@@ -82,6 +82,7 @@ for i in tqdm(range(test_num)):
             init_latents = prc_wm.get_init_latent()
         else:
             raise NotImplementedError
+    init_latents_cloned = init_latents.clone()
     orig_image, _, _ = generate(prompt=current_prompt,
                                 init_latents=init_latents,
                                 num_inference_steps=args.inf_steps,
@@ -89,10 +90,6 @@ for i in tqdm(range(test_num)):
                                 pipe=pipe
                                 )
     orig_image.save(f'{save_folder}/{i}.png')
-
-print(f'Done generating {method} images')
-
-for i in tqdm(range(test_num)):
     img = Image.open(f'results/{exp_id}/original_images/{i}.png')
     reversed_latents = exact_inversion(img,
                                        prompt='',
@@ -100,8 +97,9 @@ for i in tqdm(range(test_num)):
                                        inv_order=cur_inv_order,
                                        pipe=pipe
                                        )
-    fake_bit_acc = prc_wm.detect(reversed_latents.to(torch.float64).flatten().cpu())
+    bit_acc = prc_wm.detect(reversed_latents.to(torch.float64).flatten().cpu())
+    fake_bit_acc = prc_wm.detect(init_latents_cloned.to(torch.float64).flatten().cpu())
 
-    print(f'{i:03d}: {fake_bit_acc:.4f}')
+    print(f'{i:03d}: {bit_acc:.4f}, {fake_bit_acc:.4f}')
 
 print(f'tpr: {prc_wm.get_tpr():.4f}')
